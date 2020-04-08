@@ -9,7 +9,7 @@ namespace fs = std::filesystem;
 using namespace std;
 
 /*VM TRANSLATOR FUNCTIONS*/
-VMTranslator::VMTranslator(std::string path) { // initialize parsers here
+VMTranslator::VMTranslator(std::string path) {
 	vmCount = 0;
 	if (fs::path(path).extension() == ".vm") {
 		// open vm file
@@ -58,7 +58,7 @@ void VMTranslator::translate(Parser& p, CodeWriter* CW) {
 		else if (p.commandType() == Parser::C_POP) {
 			CW->writePushPop("pop", p.arg1(), p.arg2());
 		}
-	/*	else if (p.commandType() == Parser::C_LABEL) {
+		else if (p.commandType() == Parser::C_LABEL) {
 			CW->writeLabel(p.arg1());
 		}
 		else if (p.commandType() == Parser::C_GOTO) {
@@ -69,7 +69,7 @@ void VMTranslator::translate(Parser& p, CodeWriter* CW) {
 		}
 		else if (p.commandType() == Parser::C_FUNCTION)
 			CW->writeFunction(p.arg1(), p.arg2());
-		else if (p.commandType() == Parser::C_CALL)
+	/*	else if (p.commandType() == Parser::C_CALL)
 			CW->writeCall(p.arg1(), p.arg2());
 		else if (p.commandType() == Parser::C_RETURN)
 			CW->writeReturn();*/
@@ -122,7 +122,7 @@ void VMTranslator::Parser::advance() {
 		type = C_PUSH;
 	else if (command == "pop")
 		type = C_POP;
-	/*else if (command == "label")
+	else if (command == "label")
 		type = C_LABEL;
 	else if (command == "goto")
 		type = C_GOTO;
@@ -130,7 +130,7 @@ void VMTranslator::Parser::advance() {
 		type = C_IF;
 	else if (command == "function")
 		type = C_FUNCTION;
-	else if (command == "call")
+	/*else if (command == "call")
 		type = C_CALL;
 	else if (command == "return")
 		type = C_RETURN;*/
@@ -381,4 +381,19 @@ void VMTranslator::CodeWriter::writePushPop(string command, string segment, int 
 			asmFile << "@" + name + '.' + to_string(index) + "\nM=D\n";
 		}
 	}
+}
+
+void VMTranslator::CodeWriter::writeLabel(string label) {
+	asmFile << '(' + name + '$' + label + ")\n";
+}
+
+void VMTranslator::CodeWriter::writeGoto(string label) {
+	asmFile << '@' + name + '$' + label + '\n';
+	asmFile << "0;JMP\n";
+}
+
+void VMTranslator::CodeWriter::writeIf(string label) {
+	updateStack("pop");	// update stack pointer
+	asmFile << "@SP\nA=M\nD=M\n"; // get top of stack
+	asmFile << "@0\nD=D+A\n@" + name + '$' + label + "\nD;JNE\n";	// jump to label if D != 0
 }
