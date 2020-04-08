@@ -10,7 +10,7 @@ using namespace std;
 
 /*VM TRANSLATOR FUNCTIONS*/
 VMTranslator::VMTranslator(std::string path) { // initialize parsers here
-	int vmCount = 0;
+	vmCount = 0;
 	if (fs::path(path).extension() == ".vm") {
 		// open vm file
 		vmFiles = new string[1];
@@ -19,7 +19,7 @@ VMTranslator::VMTranslator(std::string path) { // initialize parsers here
 		vmCount = 1;
 	}
 	else {
-		asmFileName = fs::path(path).string() + ".asm";
+		asmFileName = fs::path(path).string();
 		// parse directory for any vm files, then add to list of vm files to be processed
 		// get vm file count
 		for (auto& p : fs::directory_iterator(path))
@@ -36,8 +36,17 @@ VMTranslator::VMTranslator(std::string path) { // initialize parsers here
 	}
 	// parser & codewriter initialization
 	CW = new CodeWriter(asmFileName);
-	VMTranslator::Parser p(vmFiles[0]);
-	// move this somewhere else
+	prsr = new Parser[vmCount];
+	for (int a = 0; a < vmCount; a++)
+		prsr[a].initParser(vmFiles[a]);
+
+	// writeInit call here
+	return;
+}
+
+void VMTranslator::translate(Parser& p, CodeWriter* CW) {
+	// set function name here
+	CW->setFileName(p.getVMFileName());
 	while (p.hasMoreCommands()) {
 		p.advance();
 		if (p.commandType() == Parser::C_ARITHMETIC)
@@ -49,8 +58,27 @@ VMTranslator::VMTranslator(std::string path) { // initialize parsers here
 		else if (p.commandType() == Parser::C_POP) {
 			CW->writePushPop("pop", p.arg1(), p.arg2());
 		}
+	/*	else if (p.commandType() == Parser::C_LABEL) {
+			CW->writeLabel(p.arg1());
+		}
+		else if (p.commandType() == Parser::C_GOTO) {
+			CW->writeGoto(p.arg1());
+		}
+		else if (p.commandType() == Parser::C_IF) {
+			CW->writeIf(p.arg1());
+		}
+		else if (p.commandType() == Parser::C_FUNCTION)
+			CW->writeFunction(p.arg1(), p.arg2());
+		else if (p.commandType() == Parser::C_CALL)
+			CW->writeCall(p.arg1(), p.arg2());
+		else if (p.commandType() == Parser::C_RETURN)
+			CW->writeReturn();*/
 	}
-	return;
+}
+
+void VMTranslator::startOutput() {
+	for (int i = 0; i < vmCount; i++)
+		translate(prsr[i], CW);
 }
 
 VMTranslator::~VMTranslator() {
@@ -60,11 +88,12 @@ VMTranslator::~VMTranslator() {
 }
 
 /*PARSER FUNCTIONS*/
-VMTranslator::Parser::Parser(string filename) {
+void VMTranslator::Parser::initParser(string filename) {
 	currentCmd = "";
 	argument1 = "";
 	argument2 = 0;
 	type = C_COMMENT;
+	vmFileName = filename;
 	vmFile.open(filename);
 	if (!vmFile.is_open())
 		return;
@@ -93,7 +122,7 @@ void VMTranslator::Parser::advance() {
 		type = C_PUSH;
 	else if (command == "pop")
 		type = C_POP;
-	else if (command == "label")
+	/*else if (command == "label")
 		type = C_LABEL;
 	else if (command == "goto")
 		type = C_GOTO;
@@ -104,8 +133,8 @@ void VMTranslator::Parser::advance() {
 	else if (command == "call")
 		type = C_CALL;
 	else if (command == "return")
-		type = C_RETURN;
-	else 	// expand on the other types later
+		type = C_RETURN;*/
+	else 	
 		type = C_ARITHMETIC;
 
 	// extract arguments
@@ -125,11 +154,17 @@ void VMTranslator::Parser::advance() {
 
 /*CODEWRITER FUNCTIONS*/
 VMTranslator::CodeWriter::CodeWriter(string fileName) {
-	asmFile.open(fileName);
-	name = fileName;
-	size_t x = name.find_last_of("\\");
-	name = name.erase(0, x + 1);
-	stackSize = 0;
+	string y;
+	if (fileName.substr(fileName.length() - 4, 3) == ".vm") {
+		y = fileName.substr(0, fileName.length() - 3) + ".asm";
+		asmFile.open(y);
+	}
+	else {
+		y = fileName.substr(0, fileName.length() - 1);
+		size_t x = y.find_last_of("\\");
+		y = y.erase(0, x) + ".asm";
+		asmFile.open(fileName + y);
+	}
 	unique = 0;
 }
 
@@ -139,229 +174,211 @@ VMTranslator::CodeWriter::~CodeWriter() {
 
 // change input file (in situations where theres more than one .vm) ? filename will be made outside of this function
 void VMTranslator::CodeWriter::setFileName(string fileName) {
+	// fileName supplied by parser
+	name = fileName.substr(0, fileName.length() - 3);
+	size_t x = name.find_last_of("\\");
+	name = name.erase(0, x + 1);
+}
 
+void VMTranslator::CodeWriter::updateStack(string command) {	// updates the stack pointer
+	if(command == "push")
+		asmFile << "@1\nD=A\n@SP\nM=M+D\n";
+	else if (command == "pop")
+		asmFile << "@1\nD=A\n@SP\nM=M-D\n";
+}
+
+void VMTranslator::CodeWriter::getStackData(int num) {	// grabs either the first value or the first two values on stack
+	if (num == 2) {	// getting an x and y; x in RAM[5], y in D
+		asmFile << "@SP\nD=M\n@2\nD=D-A\nA=D\n"; // get x's address
+		asmFile << "D=M\n@5\nM=D\n";	// storing x in temp RAM[5]
+		asmFile << "@SP\nD=M\n@1\nD=D-A\nA=D\nD=M\n"; // get y
+		asmFile << "@5\n";	// get to RAM[5], since x is there
+	}
+	if (num == 1) {
+		asmFile << "@SP\nD=M\n@1\nD=D-A\nA=D\n"; // get y
+	}
 }
 
 void VMTranslator::CodeWriter::writeArithmetic(string command) {
-	string assemblyCode;
 	// remember to decrement pseudo stack pointer after completing binary operations
 	if (command == "add") {
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D+M\n"; // x + y
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again, to store new val
-		assemblyCode += "M=D\n";	// store new value at x's stack address
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		getStackData(2);
+		asmFile << "D=M+D\n"; // x + y
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		for(int i = 0; i < 2; i++)
+			updateStack("pop");		// pop values from stack
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "sub") {
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D-M\n"; // x - y
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again, to store new val
-		assemblyCode += "M=D\n";	// store new value at x's stack address
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		getStackData(2);
+		asmFile << "D=M-D\n"; // x - y
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		for(int i = 0; i < 2; i++)
+			updateStack("pop");		// pop values from stack
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "neg") {
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "M=-M\n";	// negate y
+		getStackData(1);
+		asmFile << "M=-M\n";	// negate y
 	}
 	else if (command == "eq") {	// x = y?
 		string notEqual;
 		string next;
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D-M\n"; // x - y
 		// label creation
 		notEqual = "eq" + to_string(unique);
 		next = "eqNext" + to_string(unique);
-		assemblyCode += "@" + notEqual + '\n';
 		unique++; // get new unique number
-		assemblyCode += "D;JNE\n";	// jump to eq<unique>: if D != 0
-		assemblyCode += "@1\nD=A\nD=-D\n";	// they're equal
-		assemblyCode += "@" + next + "\n0;JMP\n";
-		assemblyCode += '(' + notEqual + ')' + '\n';
-		assemblyCode += "@0\nD=A\n";		// they're not equal
-		assemblyCode += '(' + next + ')' + '\n';
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again
-		assemblyCode += "M=D\n";
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		writeArithmetic("sub");
+		updateStack("pop"); // get to subtraction result
+		asmFile << "@SP\nA=M\nD=M\n";	// D = top of stack
+		asmFile << "@" + notEqual + '\n';
+		asmFile << "D;JNE\n";	// jump to eq<unique>: if D != 0
+		asmFile << "@1\nD=A\nD=-D\n";	// they're equal
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		asmFile << "@" + next + "\n0;JMP\n";
+		asmFile << '(' + notEqual + ')' + '\n';
+		asmFile << "@0\nD=A\n";		// they're not equal
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		asmFile << '(' + next + ')' + '\n';
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "gt"){	// x > y?
-		string notGt;
+		string notEqual;
 		string next;
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D-M\n"; // x - y
 		// label creation
-		notGt = "gt" + to_string(unique);
-		next = "gtNext" + to_string(unique);
-		assemblyCode += "@" + notGt + '\n';
+		notEqual = "eq" + to_string(unique);
+		next = "eqNext" + to_string(unique);
 		unique++; // get new unique number
-		assemblyCode += "D;JLE\n";	// jump to gt<unique>: if D <= 0
-		assemblyCode += "@1\nD=A\nD=-D\n";	// x > y
-		assemblyCode += "@" + next + "\n0;JMP\n";
-		assemblyCode += '(' + notGt + ')' + '\n';
-		assemblyCode += "@0\nD=A\n";		// x < y
-		assemblyCode += '(' + next + ')' + '\n';
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again
-		assemblyCode += "M=D\n";
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		writeArithmetic("sub");
+		updateStack("pop"); // get to subtraction result
+		asmFile << "@SP\nA=M\nD=M\n";	// D = top of stack
+		asmFile << "@" + notEqual + '\n';
+		asmFile << "D;JLE\n";	// jump to eq<unique>: if D <= 0
+		asmFile << "@1\nD=A\nD=-D\n";	// they're equal
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		asmFile << "@" + next + "\n0;JMP\n";
+		asmFile << '(' + notEqual + ')' + '\n';
+		asmFile << "@0\nD=A\n";		// they're not equal
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		asmFile << '(' + next + ')' + '\n';
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "lt") {	// x < y?
-		string notLt;
+		string notEqual;
 		string next;
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D-M\n"; // x - y
 		// label creation
-		notLt = "lt" + to_string(unique);
-		next = "ltNext" + to_string(unique);
-		assemblyCode += "@" + notLt + '\n';
+		notEqual = "eq" + to_string(unique);
+		next = "eqNext" + to_string(unique);
 		unique++; // get new unique number
-		assemblyCode += "D;JGE\n";	// jump to gt<unique>: if D >= 0
-		assemblyCode += "@1\nD=A\nD=-D\n";	// x < y
-		assemblyCode += "@" + next + "\n0;JMP\n";
-		assemblyCode += '(' + notLt + ')' + '\n';
-		assemblyCode += "@0\nD=A\n";		// x > y
-		assemblyCode += '(' + next + ')' + '\n';
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again
-		assemblyCode += "M=D\n";
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		writeArithmetic("sub");
+		updateStack("pop"); // get to subtraction result
+		asmFile << "@SP\nA=M\nD=M\n";	// D = top of stack
+		asmFile << "@" + notEqual + '\n';
+		asmFile << "D;JGE\n";	// jump to eq<unique>: if D >= 0
+		asmFile << "@1\nD=A\nD=-D\n";	// they're equal
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		asmFile << "@" + next + "\n0;JMP\n";
+		asmFile << '(' + notEqual + ')' + '\n';
+		asmFile << "@0\nD=A\n";		// they're not equal
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		asmFile << '(' + next + ')' + '\n';
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "and") {
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D&M\n"; // x&y
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again, to store new val
-		assemblyCode += "M=D\n";	// store new value at x's stack address
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		getStackData(2);
+		asmFile << "D=D&M\n"; // x&y
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		for (int i = 0; i < 2; i++)
+			updateStack("pop");		// pop values from stack
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "or") {
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x
-		assemblyCode += "D=M\n";	// storing x in D
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "D=D|M\n"; // x|y
-		assemblyCode += "@" + to_string((STACK_ADDRESS + stackSize) - 2) + '\n'; // get x again, to store new val
-		assemblyCode += "M=D\n";	// store new value at x's stack address
-		assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
-		stackSize--;
+		getStackData(2);
+		asmFile << "D=D|M\n"; // x|y
+		asmFile << "@5\nM=D\n"; // store result in RAM[5]
+		for (int i = 0; i < 2; i++)
+			updateStack("pop");		// pop values from stack
+		asmFile << "@5\nD=M\n";	// get result again
+		asmFile << "@SP\nA=M\nM=D\n";	// store new value at top of stack
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "not") {	// command is not
-		assemblyCode = "@" + to_string((STACK_ADDRESS + stackSize) - 1) + '\n'; // get y
-		assemblyCode += "M=!M\n";	// negate y
+		getStackData(1);
+		asmFile << "M=!M\n";	// negate y
 	}
-	// write to output file
-	asmFile << assemblyCode;
 }
 void VMTranslator::CodeWriter::writePushPop(string command, string segment, int index) {
-	string assemblyCode;
-	int address;
+	string op;	// tell updateStack to push or pop
 	if (command == "push") {
-		address = STACK_ADDRESS + stackSize;
-		if (segment == "constant") {
-			assemblyCode = "@" + to_string(index) + '\n';	// get constant
-			assemblyCode += "D=A\n";
-			assemblyCode += "@" + to_string(address) + "\n";
-			assemblyCode += "M=D\n";
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "local") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@LCL\nA=M+D\nD=M\n"; // grabbing data at base + index
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "argument") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@ARG\nA=M+D\nD=M\n"; // grabbing data at base + index
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "this") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@THIS\nA=M+D\nD=M\n"; // grabbing data at base + index
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "that") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@THAT\nA=M+D\nD=M\n"; // grabbing data at base + index
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "pointer") {
-			assemblyCode = "@" + to_string(POINTER + index) + "\nD=M\n"; // access pointer + index
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "temp") {
-			assemblyCode = "@" + to_string(TEMP + index) + "\nD=M\n"; // access pointer + index
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		else if (segment == "static") {
-			assemblyCode = "@" + name + '.' + to_string(index) + "\nD=M\n";
-			assemblyCode += "@" + to_string(address) + "\nM=D\n";	// pushing to stack
-			assemblyCode += "@1\nD=A\n@SP\nM=M+D\n";	// update stack pointer
-		}
-		stackSize++;
+		op = command;
+		if (segment == "constant") 
+			asmFile << "@" + to_string(index) + "\nD=A\n";	// get constant
+		else if (segment == "local")
+			asmFile << "@" + to_string(index) + "\nD=A\n@LCL\nA=M+D\nD=M\n"; // grabbing data at base + index
+		else if (segment == "argument")
+			asmFile << "@" + to_string(index) + "\nD=A\n@ARG\nA=M+D\nD=M\n"; // grabbing data at base + index
+		else if (segment == "this")
+			asmFile << "@" + to_string(index) + "\nD=A\n@THIS\nA=M+D\nD=M\n"; // grabbing data at base + index
+		else if (segment == "that")
+			asmFile << "@" + to_string(index) + "\nD=A\n@THAT\nA=M+D\nD=M\n"; // grabbing data at base + index
+		else if (segment == "pointer")
+			asmFile << "@" + to_string(POINTER + index) + "\nD=M\n"; // access pointer + index
+		else if (segment == "temp")
+			asmFile << "@" + to_string(TEMP + index) + "\nD=M\n"; // access pointer + index
+		else if (segment == "static")
+			asmFile << "@" + name + '.' + to_string(index) + "\nD=M\n";
+		asmFile << "@SP\nA=M\nM=D\n";	// store in location SP points to
+		updateStack("push");	// update stack pointer
 	}
 	else if (command == "pop") {	// use temp to store base + index
-		// stack to data segment
-		stackSize--;
-		address = STACK_ADDRESS + stackSize;
+		updateStack("pop");	// update stack pointer
 		if (segment == "local") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@LCL\nD=M+D\n";	// calculate LCL + index
-			assemblyCode += "@5\nM=D\n";	// store in temp
-			assemblyCode += "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@5\nA=M\nM=D\n";	// store in lcl + index
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@" + to_string(index) + "\nD=A\n@LCL\nD=M+D\n";	// calculate LCL + index
+			asmFile << "@5\nM=D\n";	// store in temp
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@5\nA=M\nM=D\n";	// store in lcl + index
 		}
 		else if (segment == "argument") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@ARG\nD=M+D\n";	// calculate ARG + index
-			assemblyCode += "@5\nM=D\n";	// store in temp
-			assemblyCode += "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@5\nA=M\nM=D\n";	// store in lcl + index
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@" + to_string(index) + "\nD=A\n@ARG\nD=M+D\n";	// calculate ARG + index
+			asmFile << "@5\nM=D\n";	// store in temp
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@5\nA=M\nM=D\n";	// store in arg + index
 		}
 		else if (segment == "this") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@THIS\nD=M+D\n";	// calculate THIS + index
-			assemblyCode += "@5\nM=D\n";	// store in temp
-			assemblyCode += "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@5\nA=M\nM=D\n";	// store in lcl + index
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@" + to_string(index) + "\nD=A\n@THIS\nD=M+D\n";	// calculate THIS + index
+			asmFile << "@5\nM=D\n";	// store in temp
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@5\nA=M\nM=D\n";	// store in this + index
 		}
 		else if (segment == "that") {
-			assemblyCode = "@" + to_string(index) + "\nD=A\n@THAT\nD=M+D\n";	// calculate THAT + index
-			assemblyCode += "@5\nM=D\n";	// store in temp
-			assemblyCode += "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@5\nA=M\nM=D\n";	// store in lcl + index
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@" + to_string(index) + "\nD=A\n@THAT\nD=M+D\n";	// calculate THAT + index
+			asmFile << "@5\nM=D\n";	// store in temp
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@5\nA=M\nM=D\n";	// store in that + index
 		}
 		else if (segment == "pointer") {
-			assemblyCode = "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@" + to_string(POINTER + index) + "\nM=D\n";	// go to pointer + index & store stack data
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@" + to_string(POINTER + index) + "\nM=D\n";	// go to pointer + index & store stack data
 		}
 		else if (segment == "temp") {
-			assemblyCode = "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@" + to_string(TEMP + index) + "\nM=D\n";	// go to temp + index & store stack data
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@" + to_string(TEMP + index) + "\nM=D\n";	// go to temp + index & store stack data
 		}
 		else if (segment == "static") {
-			assemblyCode = "@" + to_string(address) + "\nD=M\n";	// get stack data of interest
-			assemblyCode += "@" + name + '.' + to_string(index) + "\nM=D\n";
-			assemblyCode += "@1\nD=A\n@SP\nM=M-D\n";	// update stack pointer
+			asmFile << "@SP\nA=M\nD=M\n";	// get top of stack
+			asmFile << "@" + name + '.' + to_string(index) + "\nM=D\n";
 		}
 	}
-	// write to output file
-	asmFile << assemblyCode;
 }
